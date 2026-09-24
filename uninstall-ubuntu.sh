@@ -1,95 +1,126 @@
 #!/bin/bash
 
-# Disclaimer
-echo "************************************************************"
-echo "* DISCLAIMER:                                              *"
-echo "* This script is created by DEPINspirationHUB and is      *"
-echo "* partially AI-generated. It is provided AS-IS without    *"
-echo "* any warranties or guarantees. Use at your own risk.     *"
-echo "* I (DEPINspirationHUB) will not be held liable for any   *"
-echo "* issues, damages, or losses caused by running this script. *"
-echo "************************************************************"
+set -euo pipefail
 
-# Prompt user to agree to the disclaimer
-read -p "Do you agree to proceed? (y/n): " AGREEMENT
+SCRIPT_NAME="$(basename "$0")"
+BRAVE_KEYRING_PATH="/usr/share/keyrings/brave-browser-archive-keyring.gpg"
+BRAVE_SOURCES_PATH="/etc/apt/sources.list.d/brave-browser-release.sources"
 
-# Check user input
-if [[ "$AGREEMENT" != "y" ]]; then
-    echo "You have declined the agreement. Exiting script."
-    
-    # Prompt to delete the script file
-    read -p "Do you want to delete the downloaded script file (uninstall-ubuntu.sh)? (y/n): " DELETE_FILE
-    if [[ "$DELETE_FILE" == "y" ]]; then
-        SCRIPT_PATH="$(realpath "$0")"
-        rm -- "$SCRIPT_PATH"
+delete_script_prompt() {
+    read -r -p "Do you want to delete the downloaded script file (${SCRIPT_NAME})? (y/n): " delete_file
+    if [[ "$delete_file" == "y" ]]; then
+        local script_path
+        script_path="$(realpath "$0")"
+        rm -- "$script_path"
         echo "Script file deleted."
     else
         echo "Script file retained."
     fi
-    
+}
+
+require_ubuntu() {
+    if [[ ! -r /etc/os-release ]]; then
+        echo "Unable to detect the operating system. This script supports Ubuntu."
+        exit 1
+    fi
+
+    # shellcheck disable=SC1091
+    . /etc/os-release
+
+    if [[ "${ID:-}" != "ubuntu" ]]; then
+        echo "This script supports Ubuntu only."
+        exit 1
+    fi
+}
+
+require_sudo() {
+    if ! command -v sudo >/dev/null 2>&1; then
+        echo "sudo is required to run this script."
+        exit 1
+    fi
+
+    sudo -v
+}
+
+ensure_command() {
+    local command_name="$1"
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+        echo "Required command not found: $command_name"
+        exit 1
+    fi
+}
+
+echo "************************************************************"
+echo "* DISCLAIMER:                                              *"
+echo "* This script removes the desktop environment configured   *"
+echo "* by the companion installer and is provided AS-IS.        *"
+echo "* Review it carefully and proceed at your own risk.        *"
+echo "************************************************************"
+
+read -r -p "Do you agree to proceed? (y/n): " agreement
+
+if [[ "$agreement" != "y" ]]; then
+    echo "You have declined the agreement. Exiting script."
+    delete_script_prompt
     exit 1
 fi
 
-echo "Proceeding with the Uninstallation..."
+echo "Proceeding with the uninstallation..."
 
-echo "Stopping XRDP service..."
-sudo systemctl stop xrdp
-sudo systemctl disable xrdp
+require_ubuntu
+require_sudo
+ensure_command systemctl
+ensure_command realpath
 
-echo "Removing XRDP..."
-sudo apt remove --purge xrdp -y
+if systemctl list-unit-files xrdp.service >/dev/null 2>&1; then
+    echo "Stopping XRDP service..."
+    sudo systemctl stop xrdp || true
+    sudo systemctl disable xrdp || true
+fi
 
-echo "Removing ALL GUI-related packages (XFCE, Xorg, Chrome, LightDM, etc.)..."
-sudo apt remove --purge '*xfce*' '*xorg*' '*lightdm*' '*chrome*' '*gui*' -y
+echo "Removing XRDP, XFCE, Brave Browser, and related packages..."
+sudo DEBIAN_FRONTEND=noninteractive apt-get remove --purge -y \
+    xrdp \
+    xfce4 \
+    xfce4-goodies \
+    brave-browser \
+    gdebi
 
-echo "Removing manually installed GUI applications..."
-sudo apt remove --purge '*gnome*' '*kde*' '*lxde*' '*mate*' '*i3*' '*wayland*' '*hivello*' -y
+if [[ -f "$BRAVE_SOURCES_PATH" ]]; then
+    echo "Removing Brave Browser repository configuration..."
+    sudo rm -f "$BRAVE_SOURCES_PATH"
+fi
 
-echo "Uninstalling Snap and Flatpak applications..."
-# Remove all Snap apps including Hivello
-sudo snap remove --purge $(snap list | awk 'NR>1 {print $1}')
-sudo apt remove --purge snapd -y
-sudo rm -rf ~/snap /var/cache/snapd /var/lib/snapd
+if [[ -f "$BRAVE_KEYRING_PATH" ]]; then
+    echo "Removing Brave Browser signing key..."
+    sudo rm -f "$BRAVE_KEYRING_PATH"
+fi
 
-# Remove all Flatpak apps
-flatpak uninstall --delete-data -y --noninteractive
-sudo apt remove --purge flatpak -y
-sudo rm -rf ~/.var/app /var/lib/flatpak
+echo "Removing the default XFCE session configuration for newly created users..."
+sudo rm -f /etc/skel/.xsession
 
-echo "Cleaning up unneeded dependencies..."
-sudo apt autoremove -y
-sudo apt clean
-
-echo "Removing all non-root users..."
-for user in $(awk -F: '$3 >= 1000 {print $1}' /etc/passwd); do
-    if [[ "$user" != "root" ]]; then
-        echo "Deleting user: $user"
-        sudo deluser --remove-home $user
+read -r -p "Enter the RDP username to remove (leave blank to keep the user): " remove_user
+if [[ -n "$remove_user" ]]; then
+    if id "$remove_user" >/dev/null 2>&1; then
+        echo "Deleting user: $remove_user"
+        sudo deluser --remove-home "$remove_user"
+    else
+        echo "User '$remove_user' does not exist. Skipping user removal."
     fi
-done
-
-echo "Resetting system settings..."
-sudo rm -rf /etc/skel/.config /etc/skel/.local /home/*/.config /home/*/.local
+fi
 
 echo "Disabling GUI startup..."
 sudo systemctl set-default multi-user.target
 
-echo "Final cleanup before reboot..."
-sudo rm -rf /tmp/* /var/tmp/*
+echo "Cleaning up unneeded dependencies..."
+sudo apt-get autoremove -y
+sudo apt-get clean
 
-echo "Uninstallation complete!"
+echo "Uninstallation complete."
 
-# Prompt to delete the script file before rebooting
-read -p "Do you want to delete the downloaded script file (uninstall-ubuntu.sh)? (y/n): " DELETE_FILE
-if [[ "$DELETE_FILE" == "y" ]]; then
-    SCRIPT_PATH="$(realpath "$0")"
-    rm -- "$SCRIPT_PATH"
-    echo "Script file deleted."
-else
-    echo "Script file retained."
-fi
+delete_script_prompt
 
-read -p "Do you want to reboot now? (y/N): " choice
+read -r -p "Do you want to reboot now? (y/N): " choice
 if [[ "$choice" =~ ^[Yy]$ ]]; then
     echo "Rebooting..."
     sudo reboot
